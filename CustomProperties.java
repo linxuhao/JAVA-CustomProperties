@@ -22,10 +22,10 @@ import org.apache.commons.lang3.StringEscapeUtils;
 
 
 /**
- * Class to treat property files as a List, the main focus is to deal with property files with order
- * please save after all modifications, and refresh() to reload from file
+ * Class to treat property files as a List, the main focus is to deal with property files with order and write in UTF-8 Encoding
+ * <p> Also have a little versioing system
+ * <p> Please save after all modifications, and refresh() to reload from file if you keep working on the same file
  * @author Xuhao 
- *
  */
 public class CustomProperties{
 	
@@ -369,7 +369,7 @@ public class CustomProperties{
 	 */
 	public String getReferenceValueByKey(String key){
 		String result = null;
-		int index = getReferenceContentListKey().indexOf(key);
+		int index = getReferenceContentListKey().lastIndexOf(key);
 		if(index != -1)
 		{
 			String content = referenceContentList.get(index);
@@ -458,12 +458,12 @@ public class CustomProperties{
 		//into content list
 		List<String> keyList = getContentListKey();
 		
-		int index = keyList.indexOf(key);
+		int index = keyList.lastIndexOf(key);
 		if(index != -1){
 			modifyByKey(index,key,value);
 		}else{
 			//insert after the current index
-			int indexToInsert = keyList.indexOf(referenceKey) + 1;
+			int indexToInsert = keyList.lastIndexOf(referenceKey) + 1;
 			insertContentByLineNumber(indexToInsert,key,value);
 		}
 	}
@@ -612,7 +612,7 @@ public class CustomProperties{
 	}
 	
 	/**
-	 * escape special characters with Unicode escape
+	 * escape special characters with Unicode escape, also escape CR LF to unicode in order to write every content in single line in properties file
 	 * @param input
 	 * @return
 	 * @throws java.io.IOException
@@ -621,10 +621,18 @@ public class CustomProperties{
 		StringBuilder b = new StringBuilder();
 		
 		    for (char c : input.toCharArray()) {
-		        if (c >= 128)
-		            b.append("\\u").append(String.format("%04X", (int) c));
-		    else
-		        b.append(c);
+		        if (c >= 128){
+		        	 b.append("\\u").append(String.format("%04X", (int) c));
+		        }
+			    else if(c == '\n' ){
+			    	b.append("\\u000a");
+			    }else if(c == '\r'){
+			    	b.append("\\u000d");
+			    }
+			    else{
+			    	 b.append(c);
+			    }
+			       
 		}
 		
 		return b.toString();
