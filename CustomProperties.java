@@ -617,7 +617,7 @@ public class CustomProperties{
 	 * @return
 	 * @throws java.io.IOException
 	 */
-	public static String escapeUnicode(String input) throws java.io.IOException {
+	public static String escapeUnicode(String input){
 		StringBuilder b = new StringBuilder();
 		
 		    for (char c : input.toCharArray()) {
@@ -694,6 +694,18 @@ public class CustomProperties{
 						result.add(diffProp);
 					}
 					oldKey = key;
+				}
+			}
+			return result;
+	 }
+	 
+	 public List<String> findKeysByNameLike(String name){
+		 List<String> result = new ArrayList<String>();
+			for(int i=0; i<contentList.size(); i++){
+				String content = contentList.get(i);
+				String key = getKeyFromString(content);
+				if(key.contains(name) && isProperties(content)){
+					result.add(key);
 				}
 			}
 			return result;
