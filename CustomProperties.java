@@ -13,9 +13,12 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.apache.commons.lang3.StringEscapeUtils;
 
@@ -23,8 +26,9 @@ import org.apache.commons.lang3.StringEscapeUtils;
 
 /**
  * Class to treat property files as a List, the main focus is to deal with property files with order and write in UTF-8 Encoding
- * <p> Also have a little versioing system
- * <p> Please save after all modifications, and refresh() to reload from file if you keep working on the same file
+ * <br> Also handle multi Thread read/write at same time on same file with a synchronized queue system
+ * <br> Also have a little versioing system
+ * <br> Please save after all modifications, and refresh() to reload from file if you keep working on the same file
  * @author Xuhao 
  */
 public class CustomProperties{
@@ -41,6 +45,18 @@ public class CustomProperties{
 	public static final String PROPERTIES_SEPARATOR = "=";
 	
 	public static final String VERSIONING_TEMP_FOLDER_NAME = "temp";
+	
+	/**
+	 * to handle file writing concurrency
+	 */
+	private static Map<String,ConcurrentLinkedQueue<Integer>> fileWritingQueueFifo = new HashMap<String,ConcurrentLinkedQueue<Integer>>();
+	
+	private static Map<String,Boolean> isFileWriting = new HashMap<String,Boolean>();
+	
+	/**
+	 * provide a distinct id for each writing operation in queue
+	 */
+	private static int writingIdSequance = 0;
 	
 	/**
 	 * the file source
@@ -116,6 +132,13 @@ public class CustomProperties{
 		//from file to write
 		properties = new LinkedHashMap<String,String>();
 		setDuplicatedKeys(new ArrayList<String>());
+		while(isFileWriting.containsKey((file.getAbsolutePath())) && isFileWriting.get(file.getAbsolutePath())){
+			try {
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				throw new IOException("Failed waiting file write finish before raeding", e);
+			}
+		}
 		initializeProperties();
 		initializeReferenceContent();
 	}
@@ -448,23 +471,30 @@ public class CustomProperties{
 	}
 
 	/**
+	 * does not insert if value is empty or null
 	 * 
 	 * @param referenceKey
 	 * @param key
 	 * @param value
-	 * @throws IOException if file save failed
+	 * @return true if operation succeed, false if fail
+	 * @throws IOException 
 	 */
-	public void insertOrUpdate(String referenceKey, String key, String value) throws IOException{
-		//into content list
-		List<String> keyList = getContentListKey();
-		
-		int index = keyList.lastIndexOf(key);
-		if(index != -1){
-			modifyByKey(index,key,value);
+	public boolean insertOrUpdate(String referenceKey, String key, String value) throws IOException{
+		if(value != null && !value.isEmpty()){
+			//into content list
+			List<String> keyList = getContentListKey();
+			
+			int index = keyList.lastIndexOf(key);
+			if(index != -1){
+				modifyByKey(index,key,value);
+			}else{
+				//insert after the current index
+				int indexToInsert = keyList.lastIndexOf(referenceKey) + 1;
+				insertContentByLineNumber(indexToInsert,key,value);
+			}
+			return Boolean.TRUE;
 		}else{
-			//insert after the current index
-			int indexToInsert = keyList.lastIndexOf(referenceKey) + 1;
-			insertContentByLineNumber(indexToInsert,key,value);
+			return Boolean.FALSE;
 		}
 	}
 	
@@ -514,15 +544,14 @@ public class CustomProperties{
 	 * @throws IOException
 	 */
 	public static void saveToFileWithVersioning(File currentFile, String oldContentToSave, String newContentToSave) throws IOException{
-		synchronized(currentFile){
-			String tempPath = generateTempAbsolutePath(currentFile);
-			File tempFile = new File(tempPath);
-			File tempParent = tempFile.getParentFile();
-			if(!tempParent.exists()){
-				tempParent.mkdirs();
-			}
-			saveToFile(tempFile, oldContentToSave);
-			saveToFile(currentFile, newContentToSave);
+
+		String tempPath = generateTempAbsolutePath(currentFile);
+		File tempFile = new File(tempPath);
+		File tempParent = tempFile.getParentFile();
+		if(!tempParent.exists()){
+			tempParent.mkdirs();
+		saveToFile(tempFile, oldContentToSave);
+		saveToFile(currentFile, newContentToSave);
 		}
 	}
 	
@@ -550,16 +579,45 @@ public class CustomProperties{
 	 * @throws IOException
 	 */
 	public static void saveToFile(File filePath, String fileToSave) throws IOException{
+		waitForQueue(filePath);
 		try(FileOutputStream output = new FileOutputStream(filePath,false);
 			BufferedWriter  out = new BufferedWriter(new OutputStreamWriter(output,OFFICIAL_WRITE_ENCODING))){
-			
+			isFileWriting.put(filePath.getAbsolutePath(), Boolean.TRUE);
 			out.write(fileToSave);
+			isFileWriting.put(filePath.getAbsolutePath(), Boolean.FALSE);
 		}catch(IOException e){
 			throw new IOException("[CustomProperties] - ERROR while saving file to location : " + filePath.getAbsolutePath(), e);
+		}finally{
+			//remove the thing from the queue when writing finished
+			String key = filePath.getAbsolutePath();
+			ConcurrentLinkedQueue<Integer> queueForFile = fileWritingQueueFifo.get(key);
+			queueForFile.poll();
 		}
-		
 	}
 	
+	private static void waitForQueue(File file) throws IOException {
+		String key = file.getAbsolutePath();
+		int queueId = writingIdSequance++;
+		ConcurrentLinkedQueue<Integer> queueForFile;
+		
+		if(!fileWritingQueueFifo.containsKey(key)){
+			queueForFile = new ConcurrentLinkedQueue<Integer>();
+			queueForFile.add(queueId);
+			fileWritingQueueFifo.put(key, queueForFile);
+		}else{
+			queueForFile = fileWritingQueueFifo.get(key);
+			queueForFile.add(queueId);
+		}
+		
+		while(queueForFile.peek() != null && queueForFile.peek() != queueId){
+			try {
+				Thread.sleep(500);
+			} catch (InterruptedException e) {
+				throw new IOException("Failed sleep during queue for file writing",e);
+			}
+		}
+	}
+
 	/**
 	 * the old content
 	 * @return
