@@ -8,5 +8,7 @@ my custom lib to deal with properties files in java
  
  *  Please save after all modifications, and refresh() to reload from file if you keep working on the same file
  
+ It requires a propertie file and a reference propertie file to find difference between 2 files, can not work without a reference proeprtie file
+ 
  * @author Xuhao 
  
