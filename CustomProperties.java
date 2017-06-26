@@ -11,6 +11,7 @@ import java.io.OutputStreamWriter;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
@@ -18,16 +19,19 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Deque;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.apache.commons.lang3.StringEscapeUtils;
+import org.apache.commons.lang3.StringUtils;
 
 
 
 /**
  * Class to treat property files as a List, the main focus is to deal with property files with order and write in UTF-8 Encoding
  * <br> Also handle multi Thread read/write at same time on same file with a synchronized queue system
- * <br> Also have a little versioing system
+ * <br> Also have a little versioning  system
+ * <br> conserve duplicate keys(even you are not supposed to have), but can modify only the last occurrence
  * <br> Please save after all modifications, and refresh() to reload from file if you keep working on the same file
  * @author Xuhao 
  */
@@ -74,7 +78,7 @@ public class CustomProperties{
 	private List<String> contentList;
 	
 	/**
-	 * The reference file content, only use to compare
+	 * The reference file content, only use to compare and to get reference value
 	 */
 	private List<String> referenceContentList;
 	
@@ -88,7 +92,15 @@ public class CustomProperties{
 	 */
 	private LinkedHashMap<String,String> properties;
 	
-	private List<String> duplicatedKeys;
+	/**
+	 * duplicated key , the Integer part of map is it's count
+	 */
+	private Map<String,Integer> duplicatedKeys;
+	
+	/**
+	 * only used in initialization to load duplicated keys, to not erase duplicated key informations, the number in map indicate values's order, smallest number means the values is the last one
+	 */
+	private Map<String,Deque<String>> duplicatedValues;
 	
 	/**
 	 * 
@@ -131,8 +143,9 @@ public class CustomProperties{
 		referenceContentList = new ArrayList<String>();
 		//from file to write
 		properties = new LinkedHashMap<String,String>();
-		setDuplicatedKeys(new ArrayList<String>());
-		while(isFileWriting.containsKey((file.getAbsolutePath())) && isFileWriting.get(file.getAbsolutePath())){
+		setDuplicatedKeys(new LinkedHashMap<String,Integer>());
+		duplicatedValues = new HashMap<String,Deque<String>>();
+		while(isFileWriting.containsKey(file.getAbsolutePath()) && isFileWriting.get(file.getAbsolutePath())){
 			try {
 				Thread.sleep(100);
 			} catch (InterruptedException e) {
@@ -141,27 +154,6 @@ public class CustomProperties{
 		}
 		initializeProperties();
 		initializeReferenceContent();
-	}
-
-	private void initializeReferenceContent() throws IOException {
-		int i = 1;
-		String temp = null;
-		try(FileInputStream refInput = new FileInputStream(this.structureReferenceFile);
-			BufferedReader refIn = new BufferedReader(new InputStreamReader(refInput, OFFICIAL_READ_ENCODING))){
-			
-
-			//read the entire file with UTF-8 encoding
-			while(refIn.ready()){
-				//load the line
-				temp = refIn.readLine();
-				loadContent(StringEscapeUtils.unescapeJava(temp));
-				//construct the string
-				i++;
-			}
-			
-		}catch(IOException e){
-			throw new IOException("[CustomProperties] - Error on line " + i + " : "+ temp +" while initializing reference file", e);
-		}
 	}
 
 	private void initializeProperties() throws IOException {
@@ -183,6 +175,25 @@ public class CustomProperties{
 			throw new IOException("[CustomProperties] - Error on line " + i + " : "+ temp +" while initializing writing file", e);
 		}
 	}
+	
+	private void initializeReferenceContent() throws IOException {
+		int i = 1;
+		String temp = null;
+		try(FileInputStream refInput = new FileInputStream(this.structureReferenceFile);
+			BufferedReader refIn = new BufferedReader(new InputStreamReader(refInput, OFFICIAL_READ_ENCODING))){
+			//read the entire file with UTF-8 encoding
+			while(refIn.ready()){
+				//load the line
+				temp = refIn.readLine();
+				loadContent(StringEscapeUtils.unescapeJava(temp));
+				//construct the string
+				i++;
+			}
+			
+		}catch(IOException e){
+			throw new IOException("[CustomProperties] - Error on line " + i + " : "+ temp +" while initializing reference file", e);
+		}
+	}
 
 	/**
 	 * load every content into the content list from reference file
@@ -191,7 +202,13 @@ public class CustomProperties{
 	private void loadContent(String temp) {
 		String key;
 		if(isProperties(temp) && properties.containsKey(key = getKeyFromString(temp))){
-			contentList.add(key + "=" + properties.get(key));
+			//if is the same row to the last index of duplciate key
+			if(duplicatedKeys.containsKey(key)){
+				// if there is no duplicated key count left, it is the last duplicated key so
+				contentList.add(key + "=" + duplicatedValues.get(key).pollLast());
+			}else{
+				contentList.add(key + "=" + properties.get(key));
+			}		
 		}else{
 			contentList.add(temp);
 		}
@@ -226,7 +243,20 @@ public class CustomProperties{
 			//properties
 			if(splited.length >= 1){
 				if(properties.containsKey(key)){
-					duplicatedKeys.add(key);
+					duplicatedKeys.put(key, duplicatedKeys.getOrDefault(key, 1) + 1);
+					//if is a duplicated key, save it's value in duplicatedValues
+					Deque<String> tempDeque = duplicatedValues.get(key);
+					if(tempDeque != null){
+						//add one duplicated key's value
+						tempDeque.push(value);
+					}else{
+						tempDeque = new ArrayDeque<String>();
+						//save the first duplicated key value
+						tempDeque.push(properties.get(key));
+						//save the second
+						tempDeque.push(value);
+						duplicatedValues.put(key, tempDeque);
+					}
 				}
 				properties.put(key, value);
 			}else{
@@ -259,11 +289,11 @@ public class CustomProperties{
 		this.file = file;
 	}
 	
-	public List<String> getDuplicatedKeys() {
+	public Map<String,Integer> getDuplicatedKeys() {
 		return duplicatedKeys;
 	}
 
-	protected void setDuplicatedKeys(List<String> duplicatedKeys) {
+	protected void setDuplicatedKeys(Map<String,Integer> duplicatedKeys) {
 		this.duplicatedKeys = duplicatedKeys;
 	}
 
@@ -334,6 +364,16 @@ public class CustomProperties{
 	protected void setOldContent(StringBuilder oldContent) {
 		this.oldContent = oldContent;
 	}
+	/**
+	 * only used in initialization to load duplicated keys, to not erase duplicated key informations, the number in map indicate values's order, smallest number means the values is the last one
+	 */
+	public Map<String,Deque<String>> getDuplicatedValues() {
+		return duplicatedValues;
+	}
+
+	protected void setDuplicatedValues(Map<String,Deque<String>> duplicatedValues) {
+		this.duplicatedValues = duplicatedValues;
+	}
 	
 	protected List<String> getContentListValue() {
 		List<String> contentListValue = new ArrayList<String>();
@@ -403,7 +443,23 @@ public class CustomProperties{
 	
 	/**
 	 * 
-	 * @param keys
+	 * @param value
+	 * @return a empty list if no key found for this value
+	 */
+	public List<String> getKeysByReferenceValue(String value){
+		List<String> keys = new ArrayList<String>();
+		for(String content : referenceContentList){
+			String contentValue = getValueFromString(content);
+			if(contentValue != null && contentValue.equals(value)){
+				keys.add(contentValue);
+			}
+		}
+		return keys;
+	}
+	
+	/**
+	 * 
+	 * @param value
 	 * @return a empty list if no key found for this value
 	 */
 	public List<String> getKeysByValue(String value){
@@ -578,12 +634,12 @@ public class CustomProperties{
 	 * save the content in file
 	 * @throws IOException
 	 */
-	public static void saveToFile(File filePath, String fileToSave) throws IOException{
+	public static void saveToFile(File filePath, String contentToSave) throws IOException{
 		waitForQueue(filePath);
 		try(FileOutputStream output = new FileOutputStream(filePath,false);
 			BufferedWriter  out = new BufferedWriter(new OutputStreamWriter(output,OFFICIAL_WRITE_ENCODING))){
 			isFileWriting.put(filePath.getAbsolutePath(), Boolean.TRUE);
-			out.write(fileToSave);
+			out.write(contentToSave);
 			isFileWriting.put(filePath.getAbsolutePath(), Boolean.FALSE);
 		}catch(IOException e){
 			throw new IOException("[CustomProperties] - ERROR while saving file to location : " + filePath.getAbsolutePath(), e);
@@ -653,7 +709,7 @@ public class CustomProperties{
 	}
 	
 	/**
-	 * to generate Chinese properties file automatically, it does not translate to Chinese, it only copys key to value xD
+	 * to generate Chinese properties file automatically, it does not translate to Chinese, it only copy key to value xD
 	 * @throws IOException
 	 */
 	public void iAmChinesePropertiesFile() throws IOException{
@@ -667,6 +723,32 @@ public class CustomProperties{
 			}
 			oldKey = key;
 		}
+	}
+	
+	/**
+	 * it is not a real Chinese file since i can't auto translate English to Chinese xD
+	 * <br>it only copy key to value xD
+	 * <br> the file will generate in the same directory as referenceFile in this case
+	 * 
+	 * @param fileNameToGenerate
+	 * @param referenceFile
+	 * @throws IOException 
+	 */
+	public static void generateChinesePropertiesFile(String fileNameToGenerate, File referenceFile) throws IOException{
+		File fileToGenerate = new File(referenceFile.getParent() + "\\" + fileNameToGenerate);
+		generateChinesePropertiesFile(fileToGenerate, referenceFile);
+	}
+	
+	/**
+	 * it is not a real Chinese file since i can't auto translate English to Chinese xD
+	 * <br>it only copy key to value xD
+	 * <br>you have to specify a absolute path in fileToGenerate
+	 * @throws IOException 
+	 */
+	public static void generateChinesePropertiesFile(File fileToGenerate, File referenceFile) throws IOException{
+		CustomProperties propToGenerate = new CustomProperties(referenceFile, referenceFile);
+		propToGenerate.iAmChinesePropertiesFile();
+		CustomProperties.saveToFile(fileToGenerate, propToGenerate.writeContentAsString());
 	}
 	
 	/**
@@ -715,7 +797,7 @@ public class CustomProperties{
 	 
 	 /**
 	  * get properties file local name such as :  en, zh, fr,de
-	  * @return
+	  * @return "" if is the default file
 	 * @throws Exception 
 	  */
 	 public static String getLocaleName(String fileName) throws Exception{
@@ -726,7 +808,7 @@ public class CustomProperties{
 			 if(step2.length >= 2){
 				 localName = step2[1];
 			 }else{
-				 //no local name found, assume this is the english file, so it's localName = \"\", path: " + fileName
+				 //no local name found, assume this is the English(Default) file, so it's localName = \"\", path: " + fileName
 			 }
 		 }catch(Exception e){
 			 throw new Exception("There is a error in file path please check : ",e);
@@ -734,12 +816,36 @@ public class CustomProperties{
 		 return localName;
 	 }
 	 
+	 /**
+	  * Does not ignore case
+	  * @param name
+	  * @param keysToTranslateOnly
+	  * @return
+	  */
 	 public List<PropertiesDifferent> findAllByNameLike(String name, boolean keysToTranslateOnly){
+		 return findAllByNameLikeAndReferenceValueLike(name, keysToTranslateOnly, null);
+	 }
+
+	 /**
+	  * Does not ignore case on key, but does ignore case on reference value
+	  * @param name
+	  * @param keysToTranslateOnly
+	  * @param value
+	  * @return
+	  */
+	 public List<PropertiesDifferent> findAllByNameLikeAndReferenceValueLike(String name, boolean keysToTranslateOnly, String valueToSearch){
 		 List<PropertiesDifferent> result = new ArrayList<PropertiesDifferent>();
 			if(keysToTranslateOnly){
 				for(PropertiesDifferent  diff : findKeysToTranslate()){
-					if(diff.getKey().contains(name)){
-						result.add(diff);
+					//if there are value to search, search by key and value, otherwise, search only by key
+					if(valueToSearch != null && !"".equals(valueToSearch)){
+						if(diff.getKey().contains(name) && StringUtils.containsIgnoreCase(diff.getOriginalValue(), valueToSearch)){
+							result.add(diff);
+						}
+					}else{
+						if(diff.getKey().contains(name)){
+							result.add(diff);
+						}
 					}
 				}
 			}else{
@@ -747,22 +853,36 @@ public class CustomProperties{
 				for(int i=0; i<contentList.size(); i++){
 					String content = contentList.get(i);
 					String key = getKeyFromString(content);
-					if(key.contains(name) && isProperties(content)){
-						PropertiesDifferent diffProp = new PropertiesDifferent(key,getReferenceValueByKey(key),properties.get(key),oldKey);
-						result.add(diffProp);
+					String referenceValue = getReferenceValueByKey(key);
+					if(valueToSearch != null && !"".equals(valueToSearch)){
+						if(key.contains(name) && isProperties(content) && StringUtils.containsIgnoreCase(referenceValue, valueToSearch)){
+							PropertiesDifferent diffProp = new PropertiesDifferent(key,referenceValue,properties.getOrDefault(key, ""),oldKey);
+							result.add(diffProp);
+						}
+					}else{
+						if(key.contains(name) && isProperties(content)){
+							PropertiesDifferent diffProp = new PropertiesDifferent(key,referenceValue,properties.getOrDefault(key, ""),oldKey);
+							result.add(diffProp);
+						}
 					}
+					
 					oldKey = key;
 				}
 			}
 			return result;
 	 }
 	 
+	 /**
+	  * search with ignore case
+	  * @param name
+	  * @return
+	  */
 	 public List<String> findKeysByNameLike(String name){
 		 List<String> result = new ArrayList<String>();
 			for(int i=0; i<contentList.size(); i++){
 				String content = contentList.get(i);
 				String key = getKeyFromString(content);
-				if(key.contains(name) && isProperties(content)){
+				if(StringUtils.containsIgnoreCase(key, name) && isProperties(content)){
 					result.add(key);
 				}
 			}
@@ -775,5 +895,6 @@ public class CustomProperties{
 	 public String getName(){
 		 return this.file.getName();
 	 }
+
 
 }
